@@ -2,18 +2,13 @@
 import { useState, useRef, useCallback } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { computeH, invertH, type Point } from "@/lib/homography";
-import { detectAllCells } from "@/lib/crossDetect";
-import { computeScore, type D2Score } from "@/lib/score";
+import { computeH, invertH, applyH, type Point } from "@/lib/homography";
 import type { GridConfig } from "@/lib/gridConfig";
-import ScoreCard from "@/components/ScoreCard";
 
 const AlignmentCanvas = dynamic(() => import("@/components/AlignmentCanvas"), { ssr: false });
 
 type Phase = "idle" | "align" | "processing" | "done" | "error";
 
-// Reference corners in canvas-space: [TL, TR, BL, BR]
-// Loaded from /grid-config.json
 let _gridConfig: GridConfig | null = null;
 async function loadGridConfig(): Promise<GridConfig> {
   if (_gridConfig) return _gridConfig;
@@ -22,11 +17,19 @@ async function loadGridConfig(): Promise<GridConfig> {
   return _gridConfig!;
 }
 
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
 export default function CorregirPage() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [imageSrc, setImageSrc] = useState<string | null>(null);
-  const [score, setScore] = useState<D2Score | null>(null);
-  const [crossed, setCrossed] = useState<boolean[][] | null>(null);
+  const [overlaySrc, setOverlaySrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -36,8 +39,7 @@ export default function CorregirPage() {
     const url = URL.createObjectURL(file);
     setImageSrc(url);
     setPhase("align");
-    setScore(null);
-    setCrossed(null);
+    setOverlaySrc(null);
   }, []);
 
   const handleConfirmAlignment = useCallback(async (corners: Point[]) => {
@@ -47,8 +49,6 @@ export default function CorregirPage() {
       const cfg = await loadGridConfig();
       const answerKey: Record<string, number[]> = await fetch("/answer-key.json").then(r => r.json());
 
-      // Reference corners from grid-config (canvas-space)
-      // Order provided by AlignmentCanvas: [TL, TR, BL, BR]
       const refCorners: Point[] = [
         cfg.markerCenters["0"] as Point,
         cfg.markerCenters["1"] as Point,
@@ -56,26 +56,71 @@ export default function CorregirPage() {
         cfg.markerCenters["3"] as Point,
       ];
 
-      // H maps photo-space → canvas-space
+      // H maps photo-space → canvas-space; H_inv maps canvas-space → photo-space
       const H = computeH(corners, refCorners);
-      // H_inv maps canvas-space → photo-space (for backward sampling)
       const H_inv = invertH(H);
 
-      // Load photo pixels using a regular canvas (safe for iOS/Safari)
+      // Load photo pixels
       const img = await loadImage(imageSrc);
+      const photoW = img.naturalWidth;
+      const photoH = img.naturalHeight;
       const tmpCanvas = document.createElement("canvas");
-      tmpCanvas.width = img.naturalWidth;
-      tmpCanvas.height = img.naturalHeight;
-      const ctx = tmpCanvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0);
-      const { data, width } = ctx.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
+      tmpCanvas.width = photoW;
+      tmpCanvas.height = photoH;
+      const tmpCtx = tmpCanvas.getContext("2d")!;
+      tmpCtx.drawImage(img, 0, 0);
+      const photoData = tmpCtx.getImageData(0, 0, photoW, photoH).data;
 
+      // Output canvas at half canvas-space resolution
+      const scale = 0.5;
+      const outW = Math.round(cfg.canvasW * scale);
+      const outH = Math.round(cfg.canvasH * scale);
+      const outCanvas = document.createElement("canvas");
+      outCanvas.width = outW;
+      outCanvas.height = outH;
+      const outCtx = outCanvas.getContext("2d")!;
+
+      // Backward warp: for each output pixel, sample from photo via H_inv
+      const outData = outCtx.createImageData(outW, outH);
+      for (let oy = 0; oy < outH; oy++) {
+        for (let ox = 0; ox < outW; ox++) {
+          const canX = ox / scale;
+          const canY = oy / scale;
+          const [px, py] = applyH(H_inv, canX, canY);
+          const ix = Math.round(px);
+          const iy = Math.round(py);
+          if (!isFinite(px) || !isFinite(py) || ix < 0 || iy < 0 || ix >= photoW || iy >= photoH) continue;
+          const si = (iy * photoW + ix) * 4;
+          const di = (oy * outW + ox) * 4;
+          outData.data[di]     = photoData[si];
+          outData.data[di + 1] = photoData[si + 1];
+          outData.data[di + 2] = photoData[si + 2];
+          outData.data[di + 3] = 255;
+        }
+      }
+      outCtx.putImageData(outData, 0, 0);
+
+      // Overlay answer-key boxes in green
       const rowBounds = cfg.rowBounds as [number, number][];
-      const crossedMatrix = detectAllCells(data, width, H_inv, cfg.colCenters, rowBounds, cfg.colW / 2);
+      const colCenters = cfg.colCenters as number[];
+      const halfW = cfg.colW / 2;
+      outCtx.globalAlpha = 0.4;
+      outCtx.fillStyle = "#22c55e";
+      for (let rowIdx = 0; rowIdx < rowBounds.length; rowIdx++) {
+        const [y1, y2] = rowBounds[rowIdx];
+        const targets = new Set(answerKey[String(rowIdx + 1)] ?? []);
+        for (let colIdx = 0; colIdx < colCenters.length; colIdx++) {
+          if (!targets.has(colIdx + 1)) continue;
+          const cx = colCenters[colIdx];
+          outCtx.fillRect(
+            (cx - halfW) * scale, y1 * scale,
+            cfg.colW * scale, (y2 - y1) * scale
+          );
+        }
+      }
+      outCtx.globalAlpha = 1;
 
-      const scoreResult = computeScore(crossedMatrix, answerKey);
-      setCrossed(crossedMatrix);
-      setScore(scoreResult);
+      setOverlaySrc(outCanvas.toDataURL("image/jpeg", 0.88));
       setPhase("done");
     } catch (err) {
       console.error(err);
@@ -87,8 +132,7 @@ export default function CorregirPage() {
   const reset = () => {
     setPhase("idle");
     setImageSrc(null);
-    setScore(null);
-    setCrossed(null);
+    setOverlaySrc(null);
     setError(null);
     if (fileRef.current) fileRef.current.value = "";
   };
@@ -109,7 +153,7 @@ export default function CorregirPage() {
 
       <div className="flex flex-col items-center gap-5 px-4 py-6 flex-1">
 
-        {/* ── IDLE: upload photo ── */}
+        {/* ── IDLE ── */}
         {phase === "idle" && (
           <div className="flex flex-col items-center gap-6 w-full max-w-sm flex-1 justify-center">
             <div className="text-center">
@@ -135,7 +179,7 @@ export default function CorregirPage() {
           </div>
         )}
 
-        {/* ── ALIGN: drag corners ── */}
+        {/* ── ALIGN ── */}
         {phase === "align" && imageSrc && (
           <div className="w-full max-w-lg">
             <AlignmentCanvas imageSrc={imageSrc} onConfirm={handleConfirmAlignment} />
@@ -146,7 +190,7 @@ export default function CorregirPage() {
         {phase === "processing" && (
           <div className="flex flex-col items-center gap-4 flex-1 justify-center">
             <div className="w-12 h-12 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin" />
-            <p className="text-slate-500">Analizando respuestas…</p>
+            <p className="text-slate-500">Rectificando imagen…</p>
           </div>
         )}
 
@@ -161,12 +205,26 @@ export default function CorregirPage() {
           </div>
         )}
 
-        {/* ── DONE: results ── */}
-        {phase === "done" && score && imageSrc && crossed && (
-          <div className="flex flex-col gap-5 w-full max-w-lg">
-            <ResultsOverlayInline imageSrc={imageSrc} crossed={crossed} />
-            <ScoreCard score={score} />
-            <button onClick={reset} className="bg-white border border-slate-200 text-slate-700 font-semibold rounded-2xl px-6 py-4 transition-colors hover:bg-slate-50">
+        {/* ── DONE ── */}
+        {phase === "done" && overlaySrc && (
+          <div className="flex flex-col gap-4 w-full">
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <span className="inline-block w-3 h-3 rounded-sm bg-green-400 opacity-80" />
+              <span>Verde = respuesta correcta. Haz zoom para revisar cada línea.</span>
+            </div>
+            <div className="rounded-xl overflow-auto border border-slate-200 shadow bg-white">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={overlaySrc}
+                alt="Prueba rectificada con plantilla"
+                className="w-full h-auto"
+                style={{ touchAction: "pinch-zoom" }}
+              />
+            </div>
+            <button
+              onClick={reset}
+              className="bg-white border border-slate-200 text-slate-700 font-semibold rounded-2xl px-6 py-4 hover:bg-slate-50"
+            >
               Corregir otra prueba
             </button>
           </div>
@@ -174,29 +232,6 @@ export default function CorregirPage() {
       </div>
     </div>
   );
-}
-
-// Lightweight inline overlay: just shows the photo + a legend
-function ResultsOverlayInline({ imageSrc, crossed }: { imageSrc: string; crossed: boolean[][] }) {
-  const totalCrossed = crossed.flat().filter(Boolean).length;
-  return (
-    <div className="rounded-xl overflow-hidden border border-slate-200 shadow bg-white">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={imageSrc} alt="Prueba corregida" className="w-full h-auto" />
-      <div className="px-3 py-2 text-xs text-slate-500 text-center">
-        {totalCrossed} elementos marcados detectados
-      </div>
-    </div>
-  );
-}
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = src;
-  });
 }
 
 function BackArrow() {
