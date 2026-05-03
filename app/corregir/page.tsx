@@ -9,10 +9,10 @@ const AlignmentCanvas = dynamic(() => import("@/components/AlignmentCanvas"), { 
 type Phase = "idle" | "align" | "done";
 
 type Base = {
-  cx: number; cy: number;   // center of the 4 markers in display-px
-  scaleBase: number;        // initial scale: marker-span / template-natural-width
-  angle: number;            // rotation from TL→TR
-  tw: number; th: number;   // template natural size
+  cx: number; cy: number;
+  scaleBase: number;
+  angle: number;
+  tw: number; th: number;
 };
 
 function computeBase(corners: Point[], displayScale: number, tw: number, th: number): Base {
@@ -21,7 +21,8 @@ function computeBase(corners: Point[], displayScale: number, tw: number, th: num
   const cy = (TL[1] + TR[1] + BL[1] + BR[1]) / 4;
   const markerW = (Math.hypot(TR[0] - TL[0], TR[1] - TL[1]) + Math.hypot(BR[0] - BL[0], BR[1] - BL[1])) / 2;
   const angle = Math.atan2(TR[1] - TL[1], TR[0] - TL[0]) * (180 / Math.PI);
-  return { cx, cy, scaleBase: markerW / tw, angle, tw, th };
+  // Markers span ~94% of the canvas width → scale up slightly to cover full page
+  return { cx, cy, scaleBase: (markerW / tw) * (1 / 0.9375), angle, tw, th };
 }
 
 export default function CorregirPage() {
@@ -30,86 +31,67 @@ export default function CorregirPage() {
   const [savedCorners, setSavedCorners] = useState<Point[] | null>(null);
   const [base,         setBase]         = useState<Base | null>(null);
   const [photoLoaded,  setPhotoLoaded]  = useState(false);
-  const [offsetX,      setOffsetX]      = useState(0);
-  const [offsetY,      setOffsetY]      = useState(0);
-  const [scaleAdj,     setScaleAdj]     = useState(1);
-  const [opacity,      setOpacity]      = useState(60);
+  // Fine-tune controls
+  const [offsetX,  setOffsetX]  = useState(0);
+  const [offsetY,  setOffsetY]  = useState(0);
+  const [wAdj,     setWAdj]     = useState(100); // % of base scale
+  const [hAdj,     setHAdj]     = useState(100);
+  const [rotAdj,   setRotAdj]   = useState(0);   // degrees added to auto-angle
+  const [opacity,  setOpacity]  = useState(60);
   const [showTemplate, setShowTemplate] = useState(true);
 
   const photoRef = useRef<HTMLImageElement | null>(null);
   const fileRef  = useRef<HTMLInputElement>(null);
   const drag     = useRef({ on: false, sx: 0, sy: 0, ox: 0, oy: 0 });
 
-  /* ── file pick ─────────────────────────────────────────────────── */
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
     setImageSrc(URL.createObjectURL(f));
-    setBase(null); setPhotoLoaded(false);
-    setOffsetX(0); setOffsetY(0); setScaleAdj(1);
+    setBase(null); setPhotoLoaded(false); resetAdjust();
     setPhase("align");
   };
 
-  /* ── alignment confirmed ─────────────────────────────────────────── */
+  const resetAdjust = () => {
+    setOffsetX(0); setOffsetY(0);
+    setWAdj(100); setHAdj(100); setRotAdj(0);
+  };
+
   const handleConfirmAlignment = useCallback((corners: Point[]) => {
     setSavedCorners(corners);
-    setBase(null); setPhotoLoaded(false);
-    setOffsetX(0); setOffsetY(0); setScaleAdj(1);
+    setBase(null); setPhotoLoaded(false); resetAdjust();
     setPhase("done");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* ── photo loaded → store ref ────────────────────────────────────── */
   const onPhotoLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     photoRef.current = e.currentTarget;
     setPhotoLoaded(true);
   };
 
-  /* ── template loaded → compute initial position ─────────────────── */
   const onTemplateLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
     const photo = photoRef.current;
-    if (!photo || !photo.naturalWidth || !savedCorners) return;
+    if (!photo?.naturalWidth || !savedCorners) return;
     const s = photo.clientWidth / photo.naturalWidth;
     const { naturalWidth: tw, naturalHeight: th } = e.currentTarget;
     setBase(computeBase(savedCorners, s, tw, th));
   }, [savedCorners]);
 
-  /* ── drag (mouse) ────────────────────────────────────────────────── */
-  const onMouseDown = (e: React.MouseEvent) => {
-    drag.current = { on: true, sx: e.clientX, sy: e.clientY, ox: offsetX, oy: offsetY };
-    e.preventDefault();
-  };
-  const onMouseMove = (e: React.MouseEvent) => {
-    if (!drag.current.on) return;
-    setOffsetX(drag.current.ox + e.clientX - drag.current.sx);
-    setOffsetY(drag.current.oy + e.clientY - drag.current.sy);
-  };
-  const onMouseUp = () => { drag.current.on = false; };
-
-  /* ── drag (touch) ────────────────────────────────────────────────── */
-  const onTouchStart = (e: React.TouchEvent) => {
-    if (e.touches.length !== 1) return;
-    drag.current = { on: true, sx: e.touches[0].clientX, sy: e.touches[0].clientY, ox: offsetX, oy: offsetY };
-  };
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (!drag.current.on || e.touches.length !== 1) return;
-    e.preventDefault();
-    setOffsetX(drag.current.ox + e.touches[0].clientX - drag.current.sx);
-    setOffsetY(drag.current.oy + e.touches[0].clientY - drag.current.sy);
-  };
-  const onTouchEnd = () => { drag.current.on = false; };
+  // ── drag ──────────────────────────────────────────────────────────────
+  const onMouseDown  = (e: React.MouseEvent) => { drag.current = { on: true, sx: e.clientX, sy: e.clientY, ox: offsetX, oy: offsetY }; e.preventDefault(); };
+  const onMouseMove  = (e: React.MouseEvent) => { if (!drag.current.on) return; setOffsetX(drag.current.ox + e.clientX - drag.current.sx); setOffsetY(drag.current.oy + e.clientY - drag.current.sy); };
+  const onMouseUp    = () => { drag.current.on = false; };
+  const onTouchStart = (e: React.TouchEvent) => { if (e.touches.length !== 1) return; drag.current = { on: true, sx: e.touches[0].clientX, sy: e.touches[0].clientY, ox: offsetX, oy: offsetY }; };
+  const onTouchMove  = (e: React.TouchEvent) => { if (!drag.current.on || e.touches.length !== 1) return; e.preventDefault(); setOffsetX(drag.current.ox + e.touches[0].clientX - drag.current.sx); setOffsetY(drag.current.oy + e.touches[0].clientY - drag.current.sy); };
+  const onTouchEnd   = () => { drag.current.on = false; };
 
   const reset = () => {
     setPhase("idle"); setImageSrc(null); setSavedCorners(null);
-    setBase(null); setPhotoLoaded(false);
-    setOffsetX(0); setOffsetY(0); setScaleAdj(1);
+    setBase(null); setPhotoLoaded(false); resetAdjust();
     if (fileRef.current) fileRef.current.value = "";
   };
 
-  /* ══════════════════════════════════════════════════════════════════
-     RENDER
-  ══════════════════════════════════════════════════════════════════ */
-
-  /* ── idle ─────────────────────────────────────────────────────────── */
+  // ── idle ──────────────────────────────────────────────────────────────
   if (phase === "idle") return (
     <div className="flex flex-col min-h-screen">
       <header className="flex items-center gap-3 px-4 py-4 border-b border-slate-200 bg-white">
@@ -134,7 +116,7 @@ export default function CorregirPage() {
     </div>
   );
 
-  /* ── align ────────────────────────────────────────────────────────── */
+  // ── align ─────────────────────────────────────────────────────────────
   if (phase === "align" && imageSrc) return (
     <div className="flex flex-col min-h-screen">
       <header className="flex items-center gap-3 px-4 py-4 border-b border-slate-200 bg-white">
@@ -147,21 +129,19 @@ export default function CorregirPage() {
     </div>
   );
 
-  /* ── done ─────────────────────────────────────────────────────────── */
-  const finalScale = base ? base.scaleBase * scaleAdj : 1;
+  // ── done ──────────────────────────────────────────────────────────────
+  const sx = base ? base.scaleBase * wAdj / 100 : 1;
+  const sy = base ? base.scaleBase * hAdj / 100 : 1;
+  const angle = base ? base.angle + rotAdj : rotAdj;
   const templateTransform = base
-    ? `translate(${base.cx + offsetX - (base.tw / 2)}px, ${base.cy + offsetY - (base.th / 2)}px) rotate(${base.angle}deg) scale(${finalScale})`
+    ? `translate(${base.cx + offsetX - base.tw / 2}px, ${base.cy + offsetY - base.th / 2}px) rotate(${angle}deg) scale(${sx}, ${sy})`
     : "none";
 
   return (
-    <div
-      className="flex flex-col min-h-screen"
-      onMouseMove={onMouseMove}
-      onMouseUp={onMouseUp}
-      onMouseLeave={onMouseUp}
-    >
-      {/* ── toolbar ──────────────────────────────────────────────────── */}
-      <header className="flex items-center gap-3 px-3 py-2 border-b border-slate-200 bg-white flex-wrap gap-y-2">
+    <div className="flex flex-col min-h-screen" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
+
+      {/* ── toolbar row 1 ── */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-slate-100 flex-wrap">
         <button onClick={reset} className="text-slate-500 p-1 shrink-0"><BackArrow /></button>
 
         <button
@@ -173,48 +153,35 @@ export default function CorregirPage() {
           {showTemplate ? "Plantilla ✓" : "Plantilla —"}
         </button>
 
-        <Slider label="Opacidad" min={10} max={90} value={opacity}
-          onChange={setOpacity} suffix="%" width={60} />
-
-        <Slider label="Escala" min={40} max={200} value={Math.round(scaleAdj * 100)}
-          onChange={v => setScaleAdj(v / 100)} suffix="%" width={60} />
-
-        <button
-          onClick={() => { setOffsetX(0); setOffsetY(0); setScaleAdj(1); }}
-          className="text-[11px] text-slate-400 px-2 py-1 border border-slate-200 rounded shrink-0 hover:bg-slate-50"
-        >
+        <button onClick={resetAdjust} className="text-[11px] text-slate-400 px-2 py-1 border border-slate-200 rounded shrink-0 hover:bg-slate-50">
           Reset
         </button>
-
-        <button
-          onClick={() => setPhase("align")}
-          className="text-[11px] text-slate-500 px-3 py-1.5 border border-slate-200 rounded-full shrink-0 hover:bg-slate-50"
-        >
+        <button onClick={() => setPhase("align")} className="text-[11px] text-slate-500 px-3 py-1.5 border border-slate-200 rounded-full shrink-0 hover:bg-slate-50">
           Reajustar esquinas
         </button>
-      </header>
+      </div>
+
+      {/* ── toolbar row 2: sliders ── */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 px-3 py-2 bg-white border-b border-slate-200 sm:flex sm:flex-wrap sm:gap-x-6">
+        <SliderRow label="Ancho"    min={20}  max={300} value={wAdj}   onChange={setWAdj}   suffix="%" />
+        <SliderRow label="Alto"     min={20}  max={300} value={hAdj}   onChange={setHAdj}   suffix="%" />
+        <SliderRow label="Rotación" min={-45} max={45}  value={rotAdj} onChange={setRotAdj} suffix="°" />
+        <SliderRow label="Opacidad" min={10}  max={90}  value={opacity} onChange={setOpacity} suffix="%" />
+      </div>
 
       <p className="text-center text-[11px] text-slate-400 py-1 shrink-0">
-        Arrastra la plantilla para ajustar posición · Usa la barra de escala para el tamaño
+        Arrastra la plantilla para ajustar posición
       </p>
 
-      {/* ── photo + overlay ──────────────────────────────────────────── */}
+      {/* ── photo + overlay ── */}
       <div className="max-w-5xl mx-auto w-full px-2 pb-8">
         <div className="relative inline-block w-full overflow-hidden rounded-lg">
 
-          {/* Photo */}
           {imageSrc && (
             // eslint-disable-next-line @next/next/no-img-element
-            <img
-              ref={photoRef}
-              src={imageSrc}
-              alt="Prueba"
-              className="w-full h-auto block"
-              onLoad={onPhotoLoad}
-            />
+            <img ref={photoRef} src={imageSrc} alt="Prueba" className="w-full h-auto block" onLoad={onPhotoLoad} />
           )}
 
-          {/* Template — rendered hidden first so it loads; visible once base is computed */}
           {showTemplate && photoLoaded && (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -227,8 +194,7 @@ export default function CorregirPage() {
               onTouchMove={onTouchMove}
               onTouchEnd={onTouchEnd}
               style={{
-                position: "absolute",
-                top: 0, left: 0,
+                position: "absolute", top: 0, left: 0,
                 width: base ? `${base.tw}px` : "auto",
                 height: base ? `${base.th}px` : "auto",
                 transformOrigin: "center center",
@@ -247,17 +213,17 @@ export default function CorregirPage() {
   );
 }
 
-/* ── tiny slider component ──────────────────────────────────────────── */
-function Slider({ label, min, max, value, onChange, suffix = "", width }: {
+function SliderRow({ label, min, max, value, onChange, suffix = "" }: {
   label: string; min: number; max: number; value: number;
-  onChange: (v: number) => void; suffix?: string; width?: number;
+  onChange: (v: number) => void; suffix?: string;
 }) {
   return (
-    <div className="flex items-center gap-1.5 flex-1" style={{ minWidth: `${(width ?? 80) + 80}px` }}>
-      <span className="text-[11px] text-slate-400 shrink-0">{label}</span>
+    <div className="flex items-center gap-1.5">
+      <span className="text-[11px] text-slate-500 w-14 shrink-0">{label}</span>
       <input type="range" min={min} max={max} value={value}
-        onChange={e => onChange(+e.target.value)} className="flex-1" />
-      <span className="text-[11px] text-slate-400 shrink-0 w-8 text-right">{value}{suffix}</span>
+        onChange={e => onChange(+e.target.value)}
+        className="w-28 sm:w-36" />
+      <span className="text-[11px] text-slate-500 w-9 shrink-0 text-right">{value}{suffix}</span>
     </div>
   );
 }
