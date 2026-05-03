@@ -1,8 +1,8 @@
 export interface LineScore {
-  tr: number; // total tachados en la fila
-  ta: number; // aciertos (tachados que son diana)
-  o: number;  // omisiones (diana no tachada)
-  c: number;  // comisiones (tachado no diana)
+  tr: number; // índice del último elemento tachado en la fila (posición, no conteo)
+  ta: number; // aciertos (tachados que son diana) hasta el último tachado
+  o: number;  // omisiones (diana no tachada) hasta el último tachado
+  c: number;  // comisiones (tachado no diana) hasta el último tachado
 }
 
 export interface D2Score {
@@ -19,13 +19,19 @@ export function computeScore(
 ): D2Score {
   const lines: LineScore[] = crossed.map((rowCrossed, rowIdx) => {
     const targets = new Set(answerKey[String(rowIdx + 1)] ?? []);
-    let tr = 0, ta = 0, o = 0, c = 0;
-    rowCrossed.forEach((isCrossed, colIdx) => {
-      const col1 = colIdx + 1; // 1-indexed
+
+    // TR = posición (1-indexed) del último elemento tachado en la fila
+    let lastCrossedIdx = -1;
+    rowCrossed.forEach((isCrossed, colIdx) => { if (isCrossed) lastCrossedIdx = colIdx; });
+    const tr = lastCrossedIdx + 1; // 0 si no tachó nada
+
+    let ta = 0, o = 0, c = 0;
+    for (let colIdx = 0; colIdx <= lastCrossedIdx; colIdx++) {
+      const col1 = colIdx + 1;
       const isTarget = targets.has(col1);
-      if (isCrossed) { tr++; isTarget ? ta++ : c++; }
+      if (rowCrossed[colIdx]) { isTarget ? ta++ : c++; }
       else if (isTarget) o++;
-    });
+    }
     return { tr, ta, o, c };
   });
 

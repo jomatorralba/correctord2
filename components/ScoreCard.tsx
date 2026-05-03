@@ -8,7 +8,7 @@ export default function ScoreCard({ score }: { score: D2Score }) {
       {/* Totales */}
       <div className="grid grid-cols-4 divide-x divide-slate-100 border-b border-slate-200">
         {[
-          { label: "TR", value: TR, desc: "Respuestas" },
+          { label: "TR", value: TR, desc: "Último tachado" },
           { label: "TA", value: TA, desc: "Aciertos" },
           { label: "O",  value: O,  desc: "Omisiones" },
           { label: "C",  value: C,  desc: "Comisiones" },
