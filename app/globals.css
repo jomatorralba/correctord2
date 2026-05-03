@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+:root {
+  --font-geist: var(--font-geist), system-ui, sans-serif;
+}
+
+@media print {
+  .print\:hidden { display: none !important; }
+  .hidden.print\:block { display: block !important; }
+}
