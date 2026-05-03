@@ -2,23 +2,26 @@
 import { useState, useRef } from "react";
 import Link from "next/link";
 
-type TF = { x: number; y: number; scale: number };
+type TF = { x: number; y: number; scale: number; rotation: number };
 
 export default function CorregirPage() {
   const [photoSrc, setPhotoSrc] = useState<string | null>(null);
   const [showTemplate, setShowTemplate] = useState(true);
   const [opacity, setOpacity] = useState(55);
-  const [tf, setTf] = useState<TF>({ x: 0, y: 0, scale: 1 });
+  const [tf, setTf] = useState<TF>({ x: 0, y: 0, scale: 1, rotation: 0 });
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Drag / pinch state — kept in a ref so we never stale-close over it
-  const g = useRef({ dragging: false, sx: 0, sy: 0, ox: 0, oy: 0, pinchDist: 0 });
+  const g = useRef({
+    dragging: false,
+    sx: 0, sy: 0, ox: 0, oy: 0,
+    pinchDist: 0, pinchAngle: 0,
+  });
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setPhotoSrc(URL.createObjectURL(file));
-    setTf({ x: 0, y: 0, scale: 1 });
+    setTf({ x: 0, y: 0, scale: 1, rotation: 0 });
   };
 
   // ── Mouse ──────────────────────────────────────────────────────────────
@@ -33,15 +36,15 @@ export default function CorregirPage() {
   };
   const onMouseUp = () => { g.current.dragging = false; };
 
-  // ── Touch ──────────────────────────────────────────────────────────────
+  // ── Touch (drag + pinch-scale + two-finger rotate) ────────────────────
   const onTouchStart = (e: React.TouchEvent) => {
     e.preventDefault();
     if (e.touches.length === 2) {
       g.current.dragging = false;
-      g.current.pinchDist = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY,
-      );
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      g.current.pinchDist  = Math.hypot(dx, dy);
+      g.current.pinchAngle = Math.atan2(dy, dx) * (180 / Math.PI);
     } else {
       g.current.dragging = true;
       g.current.sx = e.touches[0].clientX; g.current.sy = e.touches[0].clientY;
@@ -51,13 +54,19 @@ export default function CorregirPage() {
   const onTouchMove = (e: React.TouchEvent) => {
     e.preventDefault();
     if (e.touches.length === 2) {
-      const d = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY,
-      );
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const d     = Math.hypot(dx, dy);
+      const angle = Math.atan2(dy, dx) * (180 / Math.PI);
       const ratio = g.current.pinchDist > 0 ? d / g.current.pinchDist : 1;
-      setTf(t => ({ ...t, scale: Math.max(0.2, Math.min(5, t.scale * ratio)) }));
-      g.current.pinchDist = d;
+      const dAngle = angle - g.current.pinchAngle;
+      setTf(t => ({
+        ...t,
+        scale:    Math.max(0.1, Math.min(5, t.scale * ratio)),
+        rotation: t.rotation + dAngle,
+      }));
+      g.current.pinchDist  = d;
+      g.current.pinchAngle = angle;
     } else if (g.current.dragging) {
       setTf(t => ({
         ...t,
@@ -79,7 +88,7 @@ export default function CorregirPage() {
         <div className="flex flex-col items-center gap-6 w-full max-w-sm mx-auto flex-1 justify-center px-4">
           <div className="text-center">
             <p className="text-slate-600 font-medium mb-1">Carga una foto de la prueba rellena</p>
-            <p className="text-slate-400 text-sm">Luego arrastra la plantilla encima para corregir</p>
+            <p className="text-slate-400 text-sm">Luego arrastra y ajusta la plantilla encima para corregir</p>
           </div>
           <label className="flex flex-col items-center justify-center gap-3 w-full h-40 rounded-2xl border-2 border-dashed border-blue-300 bg-blue-50 hover:bg-blue-100 cursor-pointer transition-colors">
             <CameraIcon className="w-10 h-10 text-blue-400" />
@@ -99,7 +108,7 @@ export default function CorregirPage() {
   return (
     <div className="flex flex-col h-dvh bg-black select-none">
 
-      {/* Toolbar */}
+      {/* Toolbar row 1 */}
       <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-slate-200 shrink-0">
         <button onClick={() => setPhotoSrc(null)} className="text-slate-500 p-1 shrink-0">
           <BackArrow />
@@ -117,7 +126,7 @@ export default function CorregirPage() {
         </button>
 
         <div className="flex items-center gap-1.5 flex-1 min-w-0">
-          <span className="text-[11px] text-slate-400 shrink-0">Opacidad</span>
+          <span className="text-[11px] text-slate-400 shrink-0">Opac.</span>
           <input
             type="range" min={10} max={90} value={opacity}
             onChange={e => setOpacity(+e.target.value)}
@@ -127,15 +136,32 @@ export default function CorregirPage() {
         </div>
 
         <button
-          onClick={() => setTf({ x: 0, y: 0, scale: 1 })}
+          onClick={() => setTf({ x: 0, y: 0, scale: 1, rotation: 0 })}
           className="text-[11px] text-slate-400 px-2 py-1 border border-slate-200 rounded shrink-0"
         >
           Reset
         </button>
       </div>
 
+      {/* Toolbar row 2 — rotation controls */}
+      <div className="flex items-center justify-center gap-3 px-3 py-1.5 bg-white border-b border-slate-100 shrink-0">
+        <span className="text-[11px] text-slate-400">Girar:</span>
+        {[-10, -1, 1, 10].map(deg => (
+          <button
+            key={deg}
+            onClick={() => setTf(t => ({ ...t, rotation: t.rotation + deg }))}
+            className="text-xs font-mono bg-slate-100 hover:bg-slate-200 text-slate-600 px-2.5 py-1 rounded"
+          >
+            {deg > 0 ? `+${deg}°` : `${deg}°`}
+          </button>
+        ))}
+        <span className="text-[11px] text-slate-400 ml-1 font-mono">
+          {tf.rotation.toFixed(1)}°
+        </span>
+      </div>
+
       <p className="text-center text-[11px] text-white/40 py-1 shrink-0">
-        Arrastra la plantilla · Pellizca para escalar
+        Arrastra · Pellizca para escalar · Gira con dos dedos
       </p>
 
       {/* Photo + overlay */}
@@ -165,7 +191,7 @@ export default function CorregirPage() {
             className="absolute inset-0 w-full h-full object-contain cursor-grab active:cursor-grabbing touch-none"
             style={{
               opacity: opacity / 100,
-              transform: `translate(${tf.x}px, ${tf.y}px) scale(${tf.scale})`,
+              transform: `translate(${tf.x}px, ${tf.y}px) scale(${tf.scale}) rotate(${tf.rotation}deg)`,
               transformOrigin: "center center",
             }}
           />
